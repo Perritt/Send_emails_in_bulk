@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>批量邮件发送工具</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <!-- React 和 ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- React Quill -->
+    <script src="https://unpkg.com/react-quill@2.0.0/dist/react-quill.js"></script>
+    <link href="https://unpkg.com/react-quill@2.0.0/dist/quill.snow.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📧 批量邮件发送工具</h1>
+            <p>支持飞书邮箱和Gmail，轻松实现个性化批量邮件发送</p>
+        </header>
+
+        <!-- 邮件服务商选择 -->
+        <section class="email-provider-section">
+            <h2>📮 邮件服务商</h2>
+            <div class="provider-options">
+                <label class="provider-option active">
+                    <input type="radio" name="provider" value="feishu" checked>
+                    <span class="provider-icon">📨</span>
+                    <span class="provider-name">飞书邮箱</span>
+                    <span class="provider-status">已启用</span>
+                </label>
+                <label class="provider-option disabled">
+                    <input type="radio" name="provider" value="gmail" disabled>
+                    <span class="provider-icon">📧</span>
+                    <span class="provider-name">Gmail</span>
+                    <span class="provider-status coming-soon">即将上线</span>
+                </label>
+            </div>
+        </section>
+
+        <!-- 发件人管理 -->
+        <section class="sender-management-section">
+            <h2>👤 发件人管理</h2>
+            <div class="sender-list" id="senderList">
+                <!-- 发件人列表将通过JavaScript动态生成 -->
+            </div>
+            <button type="button" class="btn btn-secondary" onclick="addSender()">
+                ➕ 添加发件人
+            </button>
+            <div class="sender-help">
+                <h4>📋 如何配置发件人？</h4>
+                <div class="help-content">
+                    <h5>飞书邮箱配置：</h5>
+                    <ol>
+                        <li>登录飞书邮箱管理后台</li>
+                        <li>进入"设置" → "IMAP/SMTP服务"</li>
+                        <li>开启SMTP服务，获取应用密码</li>
+                        <li>填写邮箱地址和应用密码</li>
+                    </ol>
+                    <h5>Gmail配置（即将支持）：</h5>
+                    <ol>
+                        <li>开启Gmail两步验证</li>
+                        <li>生成应用专用密码</li>
+                        <li>填写Gmail地址和应用密码</li>
+                    </ol>
+                </div>
+            </div>
+        </section>
+
+        <!-- 文件上传区域 -->
+        <section class="upload-section">
+            <h2>📁 上传联系人数据</h2>
+            <div class="upload-area" id="uploadArea">
+                <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" style="display: none;">
+                <div class="upload-content">
+                    <div class="upload-icon">📄</div>
+                    <p>点击选择文件或拖拽文件到此处</p>
+                    <p class="upload-hint">支持 CSV、Excel 格式，需包含 Email、Creator Name、Social Media Link 列</p>
+                    <button type="button" class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+                        选择文件
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 数据预览区域 -->
+        <section class="preview-section" id="previewSection" style="display: none;">
+            <h2>📊 数据预览</h2>
+            <div class="preview-controls">
+                <span id="previewCount"></span>
+                <button type="button" class="btn btn-secondary" onclick="clearData()">清空数据</button>
+            </div>
+            <div class="table-container">
+                <table id="previewTable">
+                    <thead>
+                        <tr>
+                            <th>Email</th>
+                            <th>Creator Name</th>
+                            <th>Social Media Link</th>
+                        </tr>
+                    </thead>
+                    <tbody id="previewTableBody"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- 邮件模板区域 -->
+        <section class="template-section">
+            <h2>✍️ 邮件模板</h2>
+            <div class="template-controls">
+                <label for="emailSubject">邮件主题：</label>
+                <input type="text" id="emailSubject" placeholder="请输入邮件主题" value="Hi {Creator Name}, I'm Sean from Insty.cc">
+            </div>
+            
+            <!-- React Quill 编辑器容器 -->
+            <div id="quillEditor"></div>
+        </section>
+
+        <!-- 发送设置区域 -->
+        <section class="send-settings-section">
+            <h2>⚙️ 发送设置</h2>
+            <div class="settings-grid">
+                <div class="setting-item">
+                    <label for="sendMethod">发送方式：</label>
+                    <select id="sendMethod">
+                        <option value="smtp">SMTP（推荐）</option>
+                        <option value="api">API</option>
+                    </select>
+                </div>
+                <div class="setting-item">
+                    <label for="sendInterval">发送间隔（毫秒）：</label>
+                    <input type="number" id="sendInterval" value="2000" min="1000" max="10000">
+                </div>
+                <div class="setting-item">
+                    <button type="button" class="btn btn-secondary" onclick="testConnection()">
+                        🔍 测试连接
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 发送控制区域 -->
+        <section class="send-control-section">
+            <div class="send-controls">
+                <button type="button" class="btn btn-primary" id="startBtn" onclick="startSending()">
+                    🚀 开始发送
+                </button>
+                <button type="button" class="btn btn-danger" id="stopBtn" onclick="stopSending()" style="display: none;">
+                    ⏹️ 停止发送
+                </button>
+            </div>
+            
+            <div class="send-status" id="sendStatus" style="display: none;">
+                <div class="status-info">
+                    <span id="statusText">准备发送...</span>
+                    <span id="progressText">0 / 0</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 发送日志区域 -->
+        <section class="log-section" id="logSection" style="display: none;">
+            <h2>📋 发送日志</h2>
+            <div class="log-controls">
+                <button type="button" class="btn btn-secondary" onclick="clearLog()">清空日志</button>
+                <button type="button" class="btn btn-secondary" onclick="exportLog()">导出日志</button>
+            </div>
+            <div class="log-container" id="logContainer"></div>
+        </section>
+    </div>
+
+    <script type="text/babel">
+        // React Quill 编辑器组件
+        const { useState, useEffect, useRef } = React;
+        
+        const QuillEditor = () => {
+            const [value, setValue] = useState(`
+                <p>Hi {Creator Name},</p>
+                <p>I'm Sean Creator Manager at Insty.cc, and I've been genuinely impressed by your content on {Social Media Link}.</p>
+                <p>We would love to collaborate with you on some exciting projects.</p>
+                <p>Best regards,<br>Sean<br>Insty.cc</p>
+            `);
+            
+            const quillRef = useRef(null);
+            
+            // 自定义工具栏
+            const modules = {
+                toolbar: [
+                    [{ 'header': [1, 2, 3, false] }],
+                    ['bold', 'italic', 'underline', 'strike'],
+                    [{ 'color': [] }, { 'background': [] }],
+                    [{ 'font': [] }],
+                    [{ 'size': ['small', false, 'large', 'huge'] }],
+                    [{ 'align': [] }],
+                    [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+                    ['blockquote', 'code-block'],
+                    ['link', 'image'],
+                    ['clean']
+                ],
+                clipboard: {
+                    matchVisual: false
+                }
+            };
+            
+            const formats = [
+                'header', 'font', 'size',
+                'bold', 'italic', 'underline', 'strike', 'blockquote',
+                'list', 'bullet', 'indent',
+                'link', 'image', 'video',
+                'color', 'background',
+                'align', 'direction', 'code-block'
+            ];
+            
+            // 插入变量的函数
+            const insertVariable = (variableName) => {
+                if (quillRef.current) {
+                    const editor = quillRef.current.getEditor();
+                    const range = editor.getSelection();
+                    const position = range ? range.index : 0;
+                    editor.insertText(position, `{${variableName}}`);
+                }
+            };
+            
+            // 将插入变量函数暴露到全局
+            useEffect(() => {
+                window.insertVariable = insertVariable;
+                window.getQuillContent = () => value;
+            }, [value]);
+            
+            return (
+                <div className="quill-editor-container">
+                    <div className="quill-toolbar-extra">
+                        <button 
+                            type="button" 
+                            className="btn btn-secondary" 
+                            onClick={() => insertVariable('Creator Name')}
+                            title="插入创建者姓名"
+                        >
+                            👤 Creator Name
+                        </button>
+                        <button 
+                            type="button" 
+                            className="btn btn-secondary" 
+                            onClick={() => insertVariable('Social Media Link')}
+                            title="插入社交媒体链接"
+                        >
+                            🔗 Social Media Link
+                        </button>
+                    </div>
+                    <ReactQuill
+                        ref={quillRef}
+                        theme="snow"
+                        value={value}
+                        onChange={setValue}
+                        modules={modules}
+                        formats={formats}
+                        placeholder="开始编写您的邮件内容..."
+                        style={{ height: '300px' }}
+                    />
+                </div>
+            );
+        };
+        
+        // 渲染 React Quill 编辑器
+        ReactDOM.render(<QuillEditor />, document.getElementById('quillEditor'));
+    </script>
+
+    <script src="script.js"></script>
+</body>
+</html>
