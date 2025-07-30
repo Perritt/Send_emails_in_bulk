@@ -4,19 +4,73 @@ const nodemailer = require('nodemailer');
 const axios = require('axios');
 const path = require('path');
 
-// 加载配置文件
+// 配置加载 - 支持 Vercel 环境变量
 let config;
 try {
-    config = require('./config.js');
-    console.log('✅ 配置文件加载成功');
+    // 优先使用环境变量（Vercel 部署）
+    if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
+        config = {
+            smtp: {
+                host: process.env.SMTP_HOST || 'smtp.feishu.cn',
+                port: parseInt(process.env.SMTP_PORT) || 465,
+                secure: process.env.SMTP_SECURE === 'true',
+                auth: {
+                    user: process.env.SMTP_USER || 'Sean@insty.cc',
+                    pass: process.env.SMTP_PASS || 'zcLJcyRvDKWpUb4V'
+                }
+            },
+            api: {
+                baseUrl: 'https://open.feishu.cn/open-apis',
+                appId: process.env.FEISHU_APP_ID || 'cli_a80cb37dcd38100c',
+                appSecret: process.env.FEISHU_APP_SECRET || 'Mwt5E3bmVTpSswOREPFJSdLo6VJnnr0F'
+            },
+            server: {
+                port: process.env.PORT || 3000
+            },
+            limits: {
+                frequency: { emails: 200, seconds: 100 },
+                daily: { emails: 100 }
+            }
+        };
+        console.log('✅ Vercel 环境配置加载成功');
+    } else {
+        // 本地开发环境使用配置文件
+        config = require('./config.js');
+        console.log('✅ 本地配置文件加载成功');
+    }
 } catch (error) {
-    console.error('❌ 配置文件加载失败，请确保已创建 config.js 文件');
-    console.error('💡 请复制 config.example.js 为 config.js 并填入您的配置信息');
-    process.exit(1);
+    console.error('❌ 配置加载失败');
+    console.error('💡 本地开发：请确保已创建 config.js 文件');
+    console.error('💡 Vercel 部署：请在环境变量中设置 SMTP_USER, SMTP_PASS 等');
+    
+    // 使用默认配置
+    config = {
+        smtp: {
+            host: 'smtp.feishu.cn',
+            port: 465,
+            secure: true,
+            auth: {
+                user: 'Sean@insty.cc',
+                pass: 'zcLJcyRvDKWpUb4V'
+            }
+        },
+        api: {
+            baseUrl: 'https://open.feishu.cn/open-apis',
+            appId: 'cli_a80cb37dcd38100c',
+            appSecret: 'Mwt5E3bmVTpSswOREPFJSdLo6VJnnr0F'
+        },
+        server: {
+            port: process.env.PORT || 3000
+        },
+        limits: {
+            frequency: { emails: 200, seconds: 100 },
+            daily: { emails: 100 }
+        }
+    };
 }
 
 const app = express();
-const PORT = config.server.port || 3000;
+const PORT = config.server.port || process.env.PORT || 3000;
 
 // 中间件
 app.use(cors());
@@ -111,17 +165,15 @@ async function getFeishuAccessToken() {
             throw new Error(`获取访问令牌失败: ${response.data.msg}`);
         }
     } catch (error) {
-        console.error('获取飞书访问令牌失败:', error);
-        throw error;
+        throw new Error(`获取飞书访问令牌失败: ${error.message}`);
     }
 }
 
-// 使用飞书API发送邮件
+// 通过飞书API发送邮件
 async function sendEmailViaFeishuAPI(emailData, sender) {
     try {
         const accessToken = await getFeishuAccessToken();
         
-        // 飞书邮件API调用
         const response = await axios.post(`${config.api.baseUrl}/mail/v1/messages`, {
             msg_type: 'text',
             content: {
@@ -139,14 +191,17 @@ async function sendEmailViaFeishuAPI(emailData, sender) {
             }
         });
         
-        return response.data;
+        if (response.data.code === 0) {
+            return { success: true, messageId: response.data.data.message_id };
+        } else {
+            throw new Error(`发送失败: ${response.data.msg}`);
+        }
     } catch (error) {
-        console.error('飞书API发送邮件失败:', error);
-        throw error;
+        throw new Error(`飞书API发送失败: ${error.message}`);
     }
 }
 
-// 使用SMTP发送邮件
+// 通过SMTP发送邮件
 async function sendEmailViaSMTP(emailData, sender) {
     try {
         const transporter = nodemailer.createTransport({
@@ -167,228 +222,48 @@ async function sendEmailViaSMTP(emailData, sender) {
         };
         
         const result = await transporter.sendMail(mailOptions);
-        return result;
+        return { success: true, messageId: result.messageId };
     } catch (error) {
-        console.error('SMTP发送邮件失败:', error);
-        throw error;
+        throw new Error(`SMTP发送失败: ${error.message}`);
     }
 }
 
-// 发送邮件API端点
-app.post('/api/send-email', async (req, res) => {
+// API路由
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// 测试连接
+app.post('/api/test-connection', async (req, res) => {
     try {
-        const { to, subject, content, method = 'smtp' } = req.body;
+        const { provider } = req.body;
         
-        if (!to || !subject || !content) {
-            return res.status(400).json({
-                success: false,
-                message: '缺少必要参数'
+        if (provider === 'feishu') {
+            // 测试飞书API连接
+            const accessToken = await getFeishuAccessToken();
+            res.json({
+                success: true,
+                message: '飞书API连接成功',
+                accessToken: accessToken.substring(0, 10) + '...'
             });
-        }
-        
-        // 检查发送限制
-        checkSendLimits();
-        
-        // 获取可用发件人
-        const sender = getNextAvailableSender();
-        if (!sender) {
-            return res.status(400).json({
-                success: false,
-                message: '没有可用的发件人，请检查发件人配置或等待每日限制重置'
-            });
-        }
-        
-        const emailData = {
-            to,
-            subject,
-            content
-        };
-        
-        let result;
-        if (method === 'api') {
-            result = await sendEmailViaFeishuAPI(emailData, sender);
         } else {
-            result = await sendEmailViaSMTP(emailData, sender);
-        }
-        
-        // 更新发送计数
-        updateSendCount();
-        updateSenderUsage(sender.id);
-        
-        res.json({
-            success: true,
-            message: '邮件发送成功',
-            data: result,
-            sender: {
-                email: sender.email,
-                dailyUsed: sender.dailyUsed,
-                dailyLimit: sender.dailyLimit
-            },
-            limits: {
-                dailyRemaining: config.limits.daily.emails - dailySendCount,
-                frequencyRemaining: Math.ceil((config.limits.frequency.seconds * 1000 / config.limits.frequency.emails) / 1000)
-            }
-        });
-        
-    } catch (error) {
-        console.error('发送邮件失败:', error);
-        res.status(500).json({
-            success: false,
-            message: '邮件发送失败',
-            error: error.message
-        });
-    }
-});
-
-// 批量发送邮件API端点
-app.post('/api/send-bulk-emails', async (req, res) => {
-    try {
-        const { emails, interval = 2000, method = 'smtp' } = req.body;
-        
-        if (!emails || !Array.isArray(emails) || emails.length === 0) {
-            return res.status(400).json({
-                success: false,
-                message: '缺少邮件数据'
-            });
-        }
-        
-        // 检查可用发件人
-        const availableSenders = senders.filter(s => s.isConfigured && s.isActive && s.dailyUsed < s.dailyLimit);
-        if (availableSenders.length === 0) {
-            return res.status(400).json({
-                success: false,
-                message: '没有可用的发件人，请检查发件人配置或等待每日限制重置'
-            });
-        }
-        
-        // 计算总可用发送量
-        const totalAvailable = availableSenders.reduce((sum, sender) => sum + (sender.dailyLimit - sender.dailyUsed), 0);
-        if (emails.length > totalAvailable) {
-            return res.status(400).json({
-                success: false,
-                message: `批量发送数量超过可用发件人的总剩余限制，最多可发送 ${totalAvailable} 封`
-            });
-        }
-        
-        const results = [];
-        const errors = [];
-        let currentSenderIndex = 0;
-        
-        for (let i = 0; i < emails.length; i++) {
-            try {
-                // 检查发送限制
-                checkSendLimits();
-                
-                // 获取当前可用发件人
-                const sender = availableSenders[currentSenderIndex % availableSenders.length];
-                if (sender.dailyUsed >= sender.dailyLimit) {
-                    // 切换到下一个发件人
-                    currentSenderIndex++;
-                    const nextSender = availableSenders[currentSenderIndex % availableSenders.length];
-                    if (!nextSender || nextSender.dailyUsed >= nextSender.dailyLimit) {
-                        throw new Error('所有发件人都已达到每日发送限制');
-                    }
-                }
-                
-                const emailData = emails[i];
-                let result;
-                
-                if (method === 'api') {
-                    result = await sendEmailViaFeishuAPI(emailData, sender);
-                } else {
-                    result = await sendEmailViaSMTP(emailData, sender);
-                }
-                
-                // 更新发送计数
-                updateSendCount();
-                updateSenderUsage(sender.id);
-                
-                results.push({
-                    index: i + 1,
-                    to: emailData.to,
-                    sender: sender.email,
-                    success: true,
-                    data: result
-                });
-                
-                // 添加发送间隔
-                if (i < emails.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, interval));
-                }
-                
-            } catch (error) {
-                errors.push({
-                    index: i + 1,
-                    to: emails[i].to,
-                    error: error.message
-                });
-            }
-        }
-        
-        res.json({
-            success: true,
-            message: `批量发送完成，成功: ${results.length}，失败: ${errors.length}`,
-            results,
-            errors,
-            senders: senders.map(s => ({
-                email: s.email,
-                dailyUsed: s.dailyUsed,
-                dailyLimit: s.dailyLimit,
-                isAvailable: s.isConfigured && s.isActive && s.dailyUsed < s.dailyLimit
-            })),
-            limits: {
-                dailyRemaining: config.limits.daily.emails - dailySendCount,
-                frequencyRemaining: Math.ceil((config.limits.frequency.seconds * 1000 / config.limits.frequency.emails) / 1000)
-            }
-        });
-        
-    } catch (error) {
-        console.error('批量发送邮件失败:', error);
-        res.status(500).json({
-            success: false,
-            message: '批量发送失败',
-            error: error.message
-        });
-    }
-});
-
-// 测试连接API端点
-app.get('/api/test-connection', async (req, res) => {
-    try {
-        const availableSender = getNextAvailableSender();
-        if (!availableSender) {
-            return res.status(400).json({
-                success: false,
-                message: '没有可用的发件人'
-            });
-        }
-        
-        // 测试SMTP连接
-        const transporter = nodemailer.createTransport({
-            host: config.smtp.host,
-            port: config.smtp.port,
-            secure: config.smtp.secure,
-            auth: {
-                user: availableSender.email,
-                pass: availableSender.password
-            }
-        });
-        await transporter.verify();
-        
-        res.json({
-            success: true,
-            message: '连接测试成功',
-            sender: {
-                email: availableSender.email,
-                dailyUsed: availableSender.dailyUsed,
-                dailyLimit: availableSender.dailyLimit
-            },
-            config: {
+            // 测试SMTP连接
+            const transporter = nodemailer.createTransport({
                 host: config.smtp.host,
                 port: config.smtp.port,
-                secure: config.smtp.secure
-            }
-        });
+                secure: config.smtp.secure,
+                auth: {
+                    user: config.smtp.auth.user,
+                    pass: config.smtp.auth.pass
+                }
+            });
+            
+            await transporter.verify();
+            res.json({
+                success: true,
+                message: 'SMTP连接成功'
+            });
+        }
     } catch (error) {
         res.status(500).json({
             success: false,
@@ -398,42 +273,163 @@ app.get('/api/test-connection', async (req, res) => {
     }
 });
 
-// 获取发送限制信息
-app.get('/api/send-limits', (req, res) => {
-    res.json({
-        frequency: config.limits.frequency,
-        daily: {
-            limit: config.limits.daily.emails,
-            used: dailySendCount,
-            remaining: config.limits.daily.emails - dailySendCount
-        },
-        senders: senders.map(s => ({
-            email: s.email,
-            dailyUsed: s.dailyUsed,
-            dailyLimit: s.dailyLimit,
-            isAvailable: s.isConfigured && s.isActive && s.dailyUsed < s.dailyLimit
-        })),
-        current: {
-            sendCount,
-            lastSendTime,
-            dailySendCount
+// 发送单封邮件
+app.post('/api/send-email', async (req, res) => {
+    try {
+        const { to, subject, content, provider = 'feishu' } = req.body;
+        
+        // 检查发送限制
+        checkSendLimits();
+        
+        // 获取可用发件人
+        const sender = getNextAvailableSender();
+        if (!sender) {
+            return res.status(400).json({
+                success: false,
+                message: '没有可用的发件人，请检查配置或等待限制重置'
+            });
         }
-    });
+        
+        const emailData = { to, subject, content };
+        let result;
+        
+        if (provider === 'feishu') {
+            result = await sendEmailViaFeishuAPI(emailData, sender);
+        } else {
+            result = await sendEmailViaSMTP(emailData, sender);
+        }
+        
+        // 更新计数
+        updateSendCount();
+        updateSenderUsage(sender.id);
+        
+        res.json({
+            success: true,
+            message: '邮件发送成功',
+            messageId: result.messageId,
+            sender: sender.email
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: '邮件发送失败',
+            error: error.message
+        });
+    }
+});
+
+// 批量发送邮件
+app.post('/api/send-bulk-emails', async (req, res) => {
+    try {
+        const { emails, subject, content, provider = 'feishu' } = req.body;
+        
+        if (!emails || !Array.isArray(emails) || emails.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: '请提供有效的邮件列表'
+            });
+        }
+        
+        const results = [];
+        const errors = [];
+        
+        for (let i = 0; i < emails.length; i++) {
+            try {
+                // 检查发送限制
+                checkSendLimits();
+                
+                // 获取可用发件人
+                const sender = getNextAvailableSender();
+                if (!sender) {
+                    errors.push({
+                        index: i,
+                        email: emails[i],
+                        error: '没有可用的发件人'
+                    });
+                    continue;
+                }
+                
+                // 替换变量
+                let personalizedContent = content;
+                let personalizedSubject = subject;
+                
+                if (emails[i].variables) {
+                    Object.keys(emails[i].variables).forEach(key => {
+                        const regex = new RegExp(`\\{${key}\\}`, 'g');
+                        personalizedContent = personalizedContent.replace(regex, emails[i].variables[key]);
+                        personalizedSubject = personalizedSubject.replace(regex, emails[i].variables[key]);
+                    });
+                }
+                
+                const emailData = {
+                    to: emails[i].email,
+                    subject: personalizedSubject,
+                    content: personalizedContent
+                };
+                
+                let result;
+                if (provider === 'feishu') {
+                    result = await sendEmailViaFeishuAPI(emailData, sender);
+                } else {
+                    result = await sendEmailViaSMTP(emailData, sender);
+                }
+                
+                // 更新计数
+                updateSendCount();
+                updateSenderUsage(sender.id);
+                
+                results.push({
+                    index: i,
+                    email: emails[i].email,
+                    success: true,
+                    messageId: result.messageId,
+                    sender: sender.email
+                });
+                
+                // 添加延迟避免频率限制
+                if (i < emails.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+                
+            } catch (error) {
+                errors.push({
+                    index: i,
+                    email: emails[i].email,
+                    error: error.message
+                });
+            }
+        }
+        
+        res.json({
+            success: true,
+            message: `批量发送完成：成功 ${results.length} 封，失败 ${errors.length} 封`,
+            results,
+            errors
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: '批量发送失败',
+            error: error.message
+        });
+    }
 });
 
 // 获取发件人列表
 app.get('/api/senders', (req, res) => {
     res.json({
         success: true,
-        senders: senders.map(s => ({
-            id: s.id,
-            email: s.email,
-            provider: s.provider,
-            dailyUsed: s.dailyUsed,
-            dailyLimit: s.dailyLimit,
-            isConfigured: s.isConfigured,
-            isActive: s.isActive,
-            isAvailable: s.isConfigured && s.isActive && s.dailyUsed < s.dailyLimit
+        senders: senders.map(sender => ({
+            id: sender.id,
+            email: sender.email,
+            provider: sender.provider,
+            dailyUsed: sender.dailyUsed,
+            dailyLimit: sender.dailyLimit,
+            isConfigured: sender.isConfigured,
+            isActive: sender.isActive,
+            isAvailable: sender.dailyUsed < sender.dailyLimit
         }))
     });
 });
@@ -441,24 +437,24 @@ app.get('/api/senders', (req, res) => {
 // 添加发件人
 app.post('/api/senders', (req, res) => {
     try {
-        const { email, password, provider = 'feishu', dailyLimit = 100 } = req.body;
+        const { email, password, dailyLimit = 100, isActive = true } = req.body;
         
         if (!email || !password) {
             return res.status(400).json({
                 success: false,
-                message: '邮箱和密码不能为空'
+                message: '请提供邮箱和密码'
             });
         }
         
         const newSender = {
-            id: Date.now(),
+            id: senders.length + 1,
             email,
             password,
-            provider,
+            provider: 'feishu',
             dailyLimit,
             dailyUsed: 0,
             isConfigured: true,
-            isActive: true,
+            isActive,
             lastUsed: 0
         };
         
@@ -567,13 +563,15 @@ app.delete('/api/senders/:id', (req, res) => {
     }
 });
 
-// 启动服务器
-app.listen(PORT, () => {
-    console.log(`🚀 服务器运行在 http://localhost:${PORT}`);
-    console.log('📧 飞书邮箱API集成已启动');
-    console.log(`📊 发送限制：${config.limits.frequency.emails}封/${config.limits.frequency.seconds}秒，每日${config.limits.daily.emails}封`);
-    console.log(`👤 当前发件人：${senders.length}个`);
-    console.log('🔒 安全提醒：请确保 config.js 文件不会被提交到版本控制系统');
-});
+// 启动服务器（仅在非 Vercel 环境）
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    app.listen(PORT, () => {
+        console.log(`🚀 服务器运行在 http://localhost:${PORT}`);
+        console.log('📧 飞书邮箱API集成已启动');
+        console.log(`📊 发送限制：${config.limits.frequency.emails}封/${config.limits.frequency.seconds}秒，每日${config.limits.daily.emails}封`);
+        console.log(`👤 当前发件人：${senders.length}个`);
+        console.log('🔒 安全提醒：请确保 config.js 文件不会被提交到版本控制系统');
+    });
+}
 
 module.exports = app;
